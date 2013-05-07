@@ -9,15 +9,32 @@ from hitcount.models import HitCount
 register = template.Library()
 
 
-def get_target_ctype_pk(context, object_expr):
+def get_target_content_object(context, object_expr):
     # I don't really understand how this is working, but I took it from the
     # comment app in django.contrib and the removed it from the Node.
     try:
         obj = object_expr.resolve(context)
     except template.VariableDoesNotExist:
-        return None, None
+        return None
 
-    return ContentType.objects.get_for_model(obj), obj.pk
+    ctype = ContentType.objects.get_for_model(obj)
+
+    try:
+        obj, created = HitCount.objects.get_or_create(content_type=ctype,
+                    object_pk=obj.pk)
+    except MultipleObjectsReturned:
+        # from hitcount.models
+        # Because we are using a models.TextField() for `object_pk` to
+        # allow *any* primary key type (integer or text), we
+        # can't use `unique_together` or `unique=True` to gaurantee
+        # that only one HitCount object exists for a given object.
+
+        # remove duplicate
+        items = HitCount.objects.all().filter(content_type=ctype, object_pk=obj.pk)
+        obj = items[0]
+        for extra_items in items[1:]:
+            extra_items.delete()
+    return obj
 
 
 def return_period_from_string(arg):
@@ -81,23 +98,10 @@ class GetHitCount(template.Node):
 
 
     def render(self, context):
-        ctype, object_pk = get_target_ctype_pk(context, self.object_expr)
-        
-        try:
-            obj, created = HitCount.objects.get_or_create(content_type=ctype, 
-                        object_pk=object_pk)
-        except MultipleObjectsReturned:
-            # from hitcount.models
-            # Because we are using a models.TextField() for `object_pk` to
-            # allow *any* primary key type (integer or text), we
-            # can't use `unique_together` or `unique=True` to gaurantee
-            # that only one HitCount object exists for a given object.
+        obj = get_target_content_object(context, self.object_expr)
 
-            # remove duplicate
-            items = HitCount.objects.all().filter(content_type=ctype, object_pk=object_pk)
-            obj = items[0]
-            for extra_items in items[1:]:
-                extra_items.delete()
+        if not obj:
+            return ''
                 
         if self.period: # if user sets a time period, use it
             try:
@@ -162,10 +166,9 @@ class GetHitCountJavascript(template.Node):
 
 
     def render(self, context):
-        ctype, object_pk = get_target_ctype_pk(context, self.object_expr)
-        
-        obj, created = HitCount.objects.get_or_create(content_type=ctype, 
-                        object_pk=object_pk)
+        obj = get_target_content_object(context, self.object_expr)
+        if not obj:
+            return ''
 
         js =    "$.post( '" + reverse('hitcount_update_ajax') + "',"   + \
                 "\n\t{ hitcount_pk : '" + str(obj.pk) + "' },\n"         + \
